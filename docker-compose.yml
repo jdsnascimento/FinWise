@@ -1,0 +1,114 @@
+version: '3.8'
+
+services:
+  mysql:
+    image: mysql:8.0
+    container_name: finwise_mysql
+    restart: unless-stopped
+    environment:
+      MYSQL_ROOT_PASSWORD: rootpassword
+      MYSQL_DATABASE: finwise_db
+      MYSQL_USER: finwise_user
+      MYSQL_PASSWORD: finwise_pass
+    ports:
+      - "3307:3306"
+    volumes:
+      - mysql_data:/var/lib/mysql
+    networks:
+      - finwise_network
+    healthcheck:
+      test: [ "CMD", "mysqladmin", "ping", "-h", "localhost" ]
+      timeout: 20s
+      retries: 10
+
+  evolution_api:
+    image: atendai/evolution-api:latest
+    container_name: finwise_evolution
+    restart: unless-stopped
+    depends_on:
+      - mysql
+    ports:
+      - "8080:8080"
+    environment:
+      # Configurações do Servidor
+      SERVER_PORT: 8080
+      SERVER_URL: http://localhost:8080
+
+      # Autenticação da API
+      AUTHENTICATION_API_KEY: ${EVOLUTION_API_KEY:-your-api-key-here}
+      AUTHENTICATION_EXPOSE_IN_FETCH_INSTANCES: "true"
+
+      # Banco de dados (usando o MySQL já existente)
+      DATABASE_ENABLED: "true"
+      DATABASE_PROVIDER: mysql
+      DATABASE_CONNECTION_URI: mysql://root:rootpassword@mysql:3306/finwise_db
+
+      # Redis (pode desabilitar para desenvolvimento)
+      REDIS_ENABLED: "false"
+
+      # Webhook Global
+      WEBHOOK_GLOBAL_ENABLED: "false"
+      WEBHOOK_GLOBAL_URL: ""
+      WEBHOOK_GLOBAL_WEBHOOK_BY_EVENTS: "false"
+
+      # Configurações do WhatsApp
+      WA_BUSINESS_TOKEN_WEBHOOK: evolution_webhook
+      WA_BUSINESS_URL: https://graph.facebook.com
+      WA_BUSINESS_VERSION: v20.0
+      WA_BUSINESS_LANGUAGE: pt_BR
+
+      # Limpeza automática
+      CLEAR_STORE_MESSAGES: "true"
+      CLEAR_STORE_MESSAGES_MINUTES: 60
+
+      # Logs
+      LOG_LEVEL: ERROR
+      LOG_COLOR: "true"
+      LOG_BAILEYS: error
+
+      # Segurança
+      DEL_INSTANCE: "false"
+      CONFIG_SESSION_PHONE_CLIENT: FinWise
+      CONFIG_SESSION_PHONE_NAME: Chrome
+
+      # Rate limiting
+      RATE_LIMIT_MAX: 100
+      RATE_LIMIT_WINDOW_MS: 1000
+
+      # Tipo de conexão
+      QRCODE_LIMIT: 10
+      QRCODE_COLOR: "#10b981"
+
+    volumes:
+      - evolution_data:/app/data
+      - evolution_instances:/app/instances
+    networks:
+      - finwise_network
+
+  backend:
+    build: ./backend
+    container_name: finwise_backend
+    restart: unless-stopped
+    ports:
+      - "8000:8000"
+    env_file:
+      - ./backend/.env
+    depends_on:
+      mysql:
+        condition: service_healthy
+      evolution_api:
+        condition: service_started
+    volumes:
+      - ./backend:/app
+    networks:
+      - finwise_network
+    command: uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
+
+volumes:
+  mysql_data:
+  evolution_data:
+  evolution_instances:
+
+networks:
+  finwise_network:
+    driver: bridge
