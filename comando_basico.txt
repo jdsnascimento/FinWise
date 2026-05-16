@@ -1,0 +1,32 @@
+# Na raiz do projeto finwise/
+
+# Parar containers existentes
+docker-compose down
+
+# Remover volumes (se necessário)
+docker-compose down -v
+
+# Subir todos os serviços
+docker-compose up -d
+
+# Ver logs de todos os serviços
+docker-compose logs -f
+
+# Ver logs apenas da Evolution API
+docker-compose logs -f evolution_api
+
+# Verificar se tudo está rodando
+docker-compose ps
+
+# 1. Criar todos os arquivos na estrutura
+cd backend
+
+# 2. Verificar estrutura criada
+tree app/models/
+
+# 3. Testar criação do banco
+python test_models.py
+
+# 4. Ou via Docker
+docker-compose up -d
+docker-compose exec backend python test_models.py

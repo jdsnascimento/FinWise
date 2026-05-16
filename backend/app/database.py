@@ -13,3 +13,16 @@ def get_db():
         yield db
     finally:
         db.close()
+
+# Importar todos os models para criar as tabelas
+def init_db():
+    from .models import (
+        User,
+        Category,
+        CreditCard,
+        Bill,
+        BillInstallment,
+        Income,
+        WhatsAppInstance
+    )
+    Base.metadata.create_all(bind=engine)
