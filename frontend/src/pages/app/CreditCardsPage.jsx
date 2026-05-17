@@ -1,5 +1,6 @@
+/* eslint-disable react-hooks/set-state-in-effect */
 import { useState, useEffect } from 'react';
-import { Plus, CreditCard, Pencil, Trash, X } from '@phosphor-icons/react';
+import { Plus, CreditCard, Pencil, Trash } from '@phosphor-icons/react';
 import Card from '../../components/ui/Card';
 import Button from '../../components/ui/Button';
 import Input from '../../components/ui/Input';
@@ -25,10 +26,6 @@ export default function CreditCardsPage() {
     });
     const [error, setError] = useState('');
 
-    useEffect(() => {
-        loadCards();
-    }, []);
-
     const loadCards = async () => {
         try {
             const data = await creditCardService.getSummary();
@@ -39,6 +36,10 @@ export default function CreditCardsPage() {
             setLoading(false);
         }
     };
+
+    useEffect(() => {
+        loadCards();
+    }, []);
 
     const openCreateModal = () => {
         setEditingCard(null);

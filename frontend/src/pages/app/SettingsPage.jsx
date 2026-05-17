@@ -1,4 +1,4 @@
-import { User, Bell, Lock } from '@phosphor-icons/react';
+import { User, Bell } from '@phosphor-icons/react';
 import Card from '../../components/ui/Card';
 import Input from '../../components/ui/Input';
 import Button from '../../components/ui/Button';

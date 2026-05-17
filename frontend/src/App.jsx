@@ -1,5 +1,7 @@
 import { BrowserRouter as Router, Routes, Route, Navigate } from 'react-router-dom';
 import { AuthProvider, useAuth } from './contexts/AuthContext';
+import CategoriesPage from './pages/app/CategoriesPage';
+
 
 // Layout
 import AppLayout from './components/layout/AppLayout';
@@ -16,6 +18,7 @@ import IncomesPage from './pages/app/IncomesPage';
 import ReportsPage from './pages/app/ReportsPage';
 import WhatsAppPage from './pages/app/WhatsAppPage';
 import SettingsPage from './pages/app/SettingsPage';
+
 
 function PrivateRoute({ children }) {
   const { user, loading } = useAuth();
@@ -53,6 +56,8 @@ function AppRoutes() {
         <Route path="/bills" element={<BillsPage />} />
         <Route path="/credit-cards" element={<CreditCardsPage />} />
         <Route path="/incomes" element={<IncomesPage />} />
+        // Adicionar na lista de rotas protegidas
+        <Route path="/categories" element={<CategoriesPage />} />
         <Route path="/reports" element={<ReportsPage />} />
         <Route path="/whatsapp" element={<WhatsAppPage />} />
         <Route path="/settings" element={<SettingsPage />} />

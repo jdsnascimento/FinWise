@@ -1,15 +1,14 @@
+/* eslint-disable react-hooks/exhaustive-deps, react-hooks/set-state-in-effect */
 import { useState, useEffect } from 'react';
 import {
     Plus,
     MagnifyingGlass,
-    Funnel,
     CheckCircle,
     XCircle,
     Trash,
     CreditCard,
     Money,
-    Calendar,
-    Pencil
+    Calendar
 } from '@phosphor-icons/react';
 import Card from '../../components/ui/Card';
 import Button from '../../components/ui/Button';
@@ -55,12 +54,6 @@ export default function BillsPage() {
     });
     const [error, setError] = useState('');
 
-    useEffect(() => {
-        loadBills();
-        loadCategories();
-        loadCards();
-    }, [filters]);
-
     const loadBills = async () => {
         try {
             setLoading(true);
@@ -95,6 +88,12 @@ export default function BillsPage() {
             console.error('Erro ao carregar cartões:', err);
         }
     };
+
+    useEffect(() => {
+        loadBills();
+        loadCategories();
+        loadCards();
+    }, [filters]);
 
     const openCreateModal = () => {
         setEditingBill(null);
@@ -142,7 +141,7 @@ export default function BillsPage() {
         try {
             await billService.pay(id);
             loadBills();
-        } catch (err) {
+        } catch {
             alert('Erro ao pagar conta');
         }
     };
@@ -151,7 +150,7 @@ export default function BillsPage() {
         try {
             await billService.cancel(id);
             loadBills();
-        } catch (err) {
+        } catch {
             alert('Erro ao cancelar conta');
         }
     };

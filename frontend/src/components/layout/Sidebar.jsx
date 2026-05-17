@@ -8,7 +8,8 @@ import {
     ChartBar,
     WhatsappLogo,
     Gear,
-    SignOut
+    SignOut,
+    Tag
 } from '@phosphor-icons/react';
 import { useAuth } from '../../contexts/AuthContext';
 
@@ -33,6 +34,8 @@ const menuItems = [
         items: [
             { path: '/whatsapp', label: 'WhatsApp', icon: WhatsappLogo },
             { path: '/settings', label: 'Configurações', icon: Gear },
+            // Adicionar na seção Configurações
+            { path: '/categories', label: 'Categorias', icon: Tag },
         ]
     }
 ];
