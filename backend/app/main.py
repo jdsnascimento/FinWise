@@ -3,6 +3,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from .config import settings
 from .database import init_db
 from .routes import auth  # Nova importação
+from .routes import credit_cards
 
 app = FastAPI(
     title=settings.APP_NAME,
@@ -21,6 +22,8 @@ app.add_middleware(
 
 # Incluir rotas
 app.include_router(auth.router)  # Rotas de autenticação
+# Adicionar depois das rotas de auth
+app.include_router(credit_cards.router)
 
 @app.on_event("startup")
 async def startup_event():
