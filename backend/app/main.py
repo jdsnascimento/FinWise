@@ -2,7 +2,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from .config import settings
 from .database import init_db
-from .routes import auth, credit_cards, bills, incomes, categories, dashboard
+from .routes import auth, credit_cards, bills, incomes, categories, dashboard, whatsapp
 
 
 app = FastAPI(
@@ -30,6 +30,8 @@ app.include_router(bills.router)
 app.include_router(incomes.router)
 app.include_router(categories.router)
 app.include_router(dashboard.router)
+# Adicionar rota
+app.include_router(whatsapp.router)
 
 @app.on_event("startup")
 async def startup_event():

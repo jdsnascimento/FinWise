@@ -38,13 +38,15 @@ services:
       AUTHENTICATION_API_KEY: ${EVOLUTION_API_KEY:-your-api-key-here}
       AUTHENTICATION_EXPOSE_IN_FETCH_INSTANCES: "true"
 
-      # Banco de dados (usando o MySQL já existente)
-      DATABASE_ENABLED: "true"
+      # Banco de dados (desabilitado para usar armazenamento nativo em arquivo/sqlite)
+      DATABASE_ENABLED: "false"
       DATABASE_PROVIDER: mysql
-      DATABASE_CONNECTION_URI: mysql://root:rootpassword@mysql:3306/finwise_db
+      DATABASE_CONNECTION_URI: "mysql://root:rootpassword@mysql:3306/finwise_db"
 
-      # Redis (pode desabilitar para desenvolvimento)
+      # Redis e Cache (desabilitar Redis e ativar cache local em memória)
       REDIS_ENABLED: "false"
+      CACHE_REDIS_ENABLED: "false"
+      CACHE_LOCAL_ENABLED: "true"
 
       # Webhook Global
       WEBHOOK_GLOBAL_ENABLED: "false"
@@ -62,14 +64,16 @@ services:
       CLEAR_STORE_MESSAGES_MINUTES: 60
 
       # Logs
-      LOG_LEVEL: ERROR
+      LOG_LEVEL: DEBUG
       LOG_COLOR: "true"
-      LOG_BAILEYS: error
+      LOG_BAILEYS: debug
 
       # Segurança
       DEL_INSTANCE: "false"
-      CONFIG_SESSION_PHONE_CLIENT: FinWise
-      CONFIG_SESSION_PHONE_NAME: Chrome
+      CONFIG_SESSION_PHONE_CLIENT: "Chrome (Linux)"
+      CONFIG_SESSION_PHONE_NAME: "Chrome"
+      CONFIG_SESSION_PHONE_VERSION: "2.3000.1039680166"
+      NODE_OPTIONS: "--dns-result-order=ipv4first"
 
       # Rate limiting
       RATE_LIMIT_MAX: 100

@@ -252,6 +252,7 @@ class BillService:
         
         # Se estiver cancelando
         elif bill_data.status == BillStatus.CANCELLED and bill.status != BillStatus.CANCELLED:
+            old_status = bill.status
             bill.status = BillStatus.CANCELLED
             
             # Cancelar todas as parcelas pendentes
@@ -260,7 +261,7 @@ class BillService:
                     installment.status = BillStatus.CANCELLED
             
             # Liberar limite do cartão
-            if bill.card and bill.status == BillStatus.PENDING:
+            if bill.card and old_status in [BillStatus.PENDING, BillStatus.OVERDUE]:
                 bill.card.available_limit += bill.total_amount
         
         # Atualizar outros campos
