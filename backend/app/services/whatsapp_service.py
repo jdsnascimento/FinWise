@@ -14,30 +14,49 @@ class WhatsAppService:
             "Content-Type": "application/json"
         }
     
+    def _get_webhook_url(self) -> str:
+        """Retorna a URL do webhook acessível pela Evolution API"""
+        # Ambos containers estão na mesma rede Docker (finwise_network)
+        # então http://backend:8000 funciona perfeitamente
+        return settings.EVOLUTION_WEBHOOK_URL
+    
     async def create_instance(self, instance_name: str, phone_number: str):
-        """Cria uma nova instância WhatsApp"""
-        async with httpx.AsyncClient() as client:
+        """Cria uma nova instância WhatsApp e configura webhook"""
+        async with httpx.AsyncClient(timeout=30) as client:
+            # Primeiro, tentar deletar instância existente com mesmo nome
+            try:
+                await client.delete(
+                    f"{self.base_url}/instance/delete/{instance_name}",
+                    headers=self.headers
+                )
+                print(f"[WA] Instância anterior '{instance_name}' removida")
+            except Exception:
+                pass  # Ignora se não existir
+            
+            # Criar nova instância
+            create_payload = {
+                "instanceName": instance_name,
+                "token": self.api_key,
+                "qrcode": True,
+                "number": phone_number,
+                "integration": "WHATSAPP-BAILEYS"
+            }
+            
+            print(f"[WA] Criando instância: {instance_name}")
             response = await client.post(
                 f"{self.base_url}/instance/create",
                 headers=self.headers,
-                json={
-                    "instanceName": instance_name,
-                    "token": self.api_key,
-                    "qrcode": False,
-                    "number": phone_number,
-                    "integration": "WHATSAPP-BAILEYS"
-                },
-                timeout=30
+                json=create_payload
             )
             result = response.json()
+            print(f"[WA] Resposta create: {result}")
             
+            # Configurar webhook
             try:
-                # Setup do webhook separado (V2 exige URL com domínio válido)
-                webhook_url = settings.EVOLUTION_WEBHOOK_URL
-                if "http://backend:" in webhook_url:
-                    webhook_url = webhook_url.replace("http://backend:", "http://host.docker.internal:")
-                    
-                await client.post(
+                webhook_url = self._get_webhook_url()
+                print(f"[WA] Configurando webhook: {webhook_url}")
+                
+                webhook_response = await client.post(
                     f"{self.base_url}/webhook/set/{instance_name}",
                     headers=self.headers,
                     json={
@@ -46,58 +65,66 @@ class WhatsAppService:
                             "url": webhook_url,
                             "byEvents": False,
                             "base64": False,
-                            "events": ["MESSAGES_UPSERT"]
+                            "events": [
+                                "MESSAGES_UPSERT"
+                            ]
                         }
-                    },
-                    timeout=30
+                    }
                 )
+                print(f"[WA] Webhook configurado: {webhook_response.status_code}")
             except Exception as e:
-                print("Aviso: Falha ao configurar webhook, mas instância criada:", e)
+                print(f"[WA] Aviso: Falha ao configurar webhook: {e}")
                 
             return result
     
     async def get_qrcode(self, instance_name: str) -> Optional[str]:
         """Obtém QR Code para conectar WhatsApp"""
-        async with httpx.AsyncClient() as client:
+        async with httpx.AsyncClient(timeout=30) as client:
             try:
                 response = await client.get(
                     f"{self.base_url}/instance/connect/{instance_name}",
-                    headers=self.headers,
-                    timeout=30
+                    headers=self.headers
                 )
                 data = response.json()
                 # Na Evolution API v2 o base64 vem direto na raiz, na v1 vinha dentro de qrcode
                 base64_qr = data.get("base64") or data.get("qrcode", {}).get("base64")
                 return base64_qr
             except Exception as e:
-                print("Erro ao obter qrcode:", e)
+                print(f"[WA] Erro ao obter qrcode: {e}")
                 return None
     
     async def get_instance_status(self, instance_name: str) -> str:
         """Verifica status da instância"""
-        async with httpx.AsyncClient() as client:
+        async with httpx.AsyncClient(timeout=15) as client:
             try:
                 response = await client.get(
                     f"{self.base_url}/instance/connectionState/{instance_name}",
                     headers=self.headers
                 )
                 data = response.json()
-                return data.get("instance", {}).get("state", "disconnected")
-            except:
+                state = data.get("instance", {}).get("state", "disconnected")
+                return state
+            except Exception:
                 return "disconnected"
     
     async def send_message(self, instance_name: str, phone: str, message: str):
         """Envia mensagem WhatsApp"""
-        async with httpx.AsyncClient() as client:
-            response = await client.post(
-                f"{self.base_url}/message/sendText/{instance_name}",
-                headers=self.headers,
-                json={
-                    "number": phone,
-                    "text": message
-                }
-            )
-            return response.json()
+        async with httpx.AsyncClient(timeout=30) as client:
+            try:
+                response = await client.post(
+                    f"{self.base_url}/message/sendText/{instance_name}",
+                    headers=self.headers,
+                    json={
+                        "number": phone,
+                        "text": message
+                    }
+                )
+                result = response.json()
+                print(f"[WA] Mensagem enviada para {phone}: {response.status_code}")
+                return result
+            except Exception as e:
+                print(f"[WA] Erro ao enviar mensagem: {e}")
+                return {"error": str(e)}
     
     def parse_financial_message(self, message: str) -> Dict[str, Any]:
         """
@@ -119,7 +146,7 @@ class WhatsAppService:
             'category_hint': None,
             'card_hint': None,
             'installments': 1,
-            'payment_method': 'credit_card',
+            'payment_method': 'cash',
             'confidence': 0
         }
         
@@ -149,18 +176,16 @@ class WhatsAppService:
                     continue
         
         # Detectar método de pagamento
-        payment_methods = {
-            'pix': ['pix'],
-            'credito': ['crédito', 'credito', 'cartão', 'cartao', 'no ', 'com o '],
-            'debito': ['débito', 'debito'],
-            'dinheiro': ['dinheiro', 'cash', 'nota'],
-            'boleto': ['boleto']
-        }
-        
-        for method, keywords in payment_methods.items():
-            if any(keyword in message for keyword in keywords):
-                result['payment_method'] = 'credit_card' if method == 'credito' else method
-                break
+        if 'pix' in message:
+            result['payment_method'] = 'pix'
+        elif any(k in message for k in ['crédito', 'credito', 'cartão', 'cartao']):
+            result['payment_method'] = 'credit_card'
+        elif any(k in message for k in ['débito', 'debito']):
+            result['payment_method'] = 'debit_card'
+        elif any(k in message for k in ['dinheiro', 'cash', 'nota']):
+            result['payment_method'] = 'cash'
+        elif any(k in message for k in ['boleto']):
+            result['payment_method'] = 'boleto'
         
         # Extrair número de parcelas
         installments_match = re.search(r'(\d+)\s*x', message)
@@ -173,11 +198,13 @@ class WhatsAppService:
         for card in card_keywords:
             if card in message:
                 result['card_hint'] = card.upper()
+                if result['payment_method'] == 'cash':
+                    result['payment_method'] = 'credit_card'
                 break
         
         # Extrair descrição (palavras entre valor e cartão/parcelas)
         # Remove palavras-chave conhecidas
-        stop_words = ['paguei', 'gastei', 'comprei', 'recebi', 'pix', 'no', 'na', 'com', 'o', 'a', 'em']
+        stop_words = ['paguei', 'gastei', 'comprei', 'recebi', 'pix', 'no', 'na', 'com', 'o', 'a', 'em', 'de', 'do', 'da']
         
         words = message.split()
         description_words = [w for w in words if w not in stop_words and not w.isdigit() 
@@ -200,7 +227,6 @@ class WhatsAppService:
             'gasolina': 'Transporte',
             'combustível': 'Transporte',
             'combustivel': 'Transporte',
-            'aluguel': 'Moradia',
             'aluguel': 'Moradia',
             'conta': 'Moradia',
             'luz': 'Moradia',
@@ -225,6 +251,10 @@ class WhatsAppService:
             'viagem': 'Lazer',
             'shopping': 'Lazer',
             'jantar': 'Alimentação',
+            'almoço': 'Alimentação',
+            'almoco': 'Alimentação',
+            'café': 'Alimentação',
+            'cafe': 'Alimentação',
             'geladeira': 'Moradia',
             'eletrodoméstico': 'Moradia',
             'eletrodomestico': 'Moradia',
@@ -232,7 +262,10 @@ class WhatsAppService:
             'tênis': 'Lazer',
             'tenis': 'Lazer',
             'celular': 'Assinaturas',
-            'iphone': 'Assinaturas'
+            'iphone': 'Assinaturas',
+            'salário': 'Salário',
+            'salario': 'Salário',
+            'freelance': 'Freelance',
         }
         
         for keyword, category in category_map.items():

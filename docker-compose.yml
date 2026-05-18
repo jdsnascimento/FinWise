@@ -14,6 +14,7 @@ services:
       - "3307:3306"
     volumes:
       - mysql_data:/var/lib/mysql
+      - ./docker/mysql-init:/docker-entrypoint-initdb.d
     networks:
       - finwise_network
     healthcheck:
@@ -22,11 +23,12 @@ services:
       retries: 10
 
   evolution_api:
-    image: atendai/evolution-api:latest
+    image: atendai/evolution-api:v2.1.1
     container_name: finwise_evolution
     restart: unless-stopped
     depends_on:
-      - mysql
+      mysql:
+        condition: service_healthy
     ports:
       - "8080:8080"
     environment:
@@ -38,10 +40,17 @@ services:
       AUTHENTICATION_API_KEY: ${EVOLUTION_API_KEY:-your-api-key-here}
       AUTHENTICATION_EXPOSE_IN_FETCH_INSTANCES: "true"
 
-      # Banco de dados (desabilitado para usar armazenamento nativo em arquivo/sqlite)
-      DATABASE_ENABLED: "false"
+      # Banco de dados (habilitado para a Evolution API gerenciar sessões)
+      DATABASE_ENABLED: "true"
       DATABASE_PROVIDER: mysql
-      DATABASE_CONNECTION_URI: "mysql://root:rootpassword@mysql:3306/finwise_db"
+      DATABASE_CONNECTION_URI: "mysql://root:rootpassword@mysql:3306/evolution_db"
+      DATABASE_SAVE_DATA_INSTANCE: "true"
+      DATABASE_SAVE_DATA_NEW_MESSAGE: "false"
+      DATABASE_SAVE_MESSAGE_UPDATE: "false"
+      DATABASE_SAVE_DATA_CONTACTS: "false"
+      DATABASE_SAVE_DATA_CHATS: "false"
+      DATABASE_SAVE_DATA_LABELS: "false"
+      DATABASE_SAVE_DATA_HISTORIC: "false"
 
       # Redis e Cache (desabilitar Redis e ativar cache local em memória)
       REDIS_ENABLED: "false"

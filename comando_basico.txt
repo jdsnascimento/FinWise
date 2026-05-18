@@ -30,3 +30,9 @@ python test_models.py
 # 4. Ou via Docker
 docker-compose up -d
 docker-compose exec backend python test_models.py
+
+
+docker compose restart backend
+
+(Nota: se preferir recriar o container para garantir a 
+reconstrução, você pode rodar docker compose up -d --build backend)
