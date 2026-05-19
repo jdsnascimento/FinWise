@@ -3,6 +3,9 @@ from fastapi.middleware.cors import CORSMiddleware
 from .config import settings
 from .database import init_db
 from .routes import auth, credit_cards, bills, incomes, categories, dashboard, whatsapp
+from .routes import reports
+from .routes import notifications
+
 
 
 app = FastAPI(
@@ -32,6 +35,9 @@ app.include_router(categories.router)
 app.include_router(dashboard.router)
 # Adicionar rota
 app.include_router(whatsapp.router)
+# Rotas de relatórios
+app.include_router(reports.router)
+app.include_router(notifications.router)
 
 @app.on_event("startup")
 async def startup_event():
@@ -51,3 +57,11 @@ async def root():
 @app.get("/health")
 async def health_check():
     return {"status": "healthy"}
+
+# No startup_event, adicionar:
+@app.on_event("startup")
+async def startup_event():
+    init_db()
+    # from .scheduler import start_scheduler
+    # start_scheduler()  # Descomentar para ativar jobs
+    print("🚀 FinWise API pronta!")
