@@ -70,11 +70,12 @@ async def create_category(
 ):
     """Cria nova categoria"""
     
-    # Verificar se já existe
+    # Verificar se já existe (apenas categorias ativas)
     existing = db.query(Category).filter(
         Category.user_id == current_user.id,
         Category.name == category_data.name,
-        Category.type == category_data.type
+        Category.type == category_data.type,
+        Category.active == True
     ).first()
     
     if existing:
@@ -82,6 +83,22 @@ async def create_category(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=f"Categoria '{category_data.name}' já existe para este tipo"
         )
+
+    # Reativar categoria desativada com o mesmo nome
+    inactive = db.query(Category).filter(
+        Category.user_id == current_user.id,
+        Category.name == category_data.name,
+        Category.type == category_data.type,
+        Category.active == False
+    ).first()
+
+    if inactive:
+        inactive.active = True
+        inactive.icon = category_data.icon
+        inactive.color = category_data.color
+        db.commit()
+        db.refresh(inactive)
+        return inactive
     
     category = Category(
         user_id=current_user.id,
@@ -117,6 +134,21 @@ async def update_category(
         )
     
     update_data = category_data.dict(exclude_unset=True)
+
+    if 'name' in update_data and update_data['name'] != category.name:
+        duplicate = db.query(Category).filter(
+            Category.user_id == current_user.id,
+            Category.name == update_data['name'],
+            Category.type == category.type,
+            Category.active == True,
+            Category.id != category_id
+        ).first()
+        if duplicate:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"Categoria '{update_data['name']}' já existe para este tipo"
+            )
+
     for field, value in update_data.items():
         setattr(category, field, value)
     

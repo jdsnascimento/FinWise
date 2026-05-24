@@ -6,6 +6,7 @@ import Button from '../../components/ui/Button';
 import Input from '../../components/ui/Input';
 import Modal from '../../components/ui/Modal';
 import { categoryService } from '../../services/category.service';
+import { formatApiError } from '../../utils/format';
 
 const ICONS = ['receipt', 'restaurant', 'car', 'home', 'heart', 'book', 'gamepad', 'cart', 'credit-card', 'briefcase', 'laptop', 'trending-up', 'tag', 'gift', 'airplane', 'phone', 'camera', 'music'];
 const COLORS = ['#ef4444', '#f97316', '#eab308', '#84cc16', '#10b981', '#06b6d4', '#3b82f6', '#6366f1', '#8b5cf6', '#a855f7', '#ec4899', '#f43f5e'];
@@ -55,6 +56,7 @@ export default function CategoriesPage() {
     const [incomeCategories, setIncomeCategories] = useState([]);
     const [modalOpen, setModalOpen] = useState(false);
     const [editingCategory, setEditingCategory] = useState(null);
+    const [error, setError] = useState('');
     const [formData, setFormData] = useState({
         name: '',
         icon: 'receipt',
@@ -66,8 +68,8 @@ export default function CategoriesPage() {
         try {
             const expenses = await categoryService.listAll('expense');
             const incomes = await categoryService.listAll('income');
-            setExpenseCategories(expenses);
-            setIncomeCategories(incomes);
+            setExpenseCategories(Array.isArray(expenses) ? expenses : []);
+            setIncomeCategories(Array.isArray(incomes) ? incomes : []);
         } catch (err) {
             console.error('Erro ao carregar categorias:', err);
         }
@@ -85,6 +87,7 @@ export default function CategoriesPage() {
             color: type === 'expense' ? '#ef4444' : '#10b981',
             type
         });
+        setError('');
         setModalOpen(true);
     };
 
@@ -96,21 +99,37 @@ export default function CategoriesPage() {
             color: category.color,
             type: category.type
         });
+        setError('');
         setModalOpen(true);
     };
 
     const handleSubmit = async (e) => {
         e.preventDefault();
+        setError('');
+
+        const name = formData.name?.trim();
+        if (!name || name.length < 2) {
+            setError('O nome deve ter pelo menos 2 caracteres.');
+            return;
+        }
+
+        const payload = {
+            name,
+            icon: formData.icon,
+            color: formData.color,
+            type: formData.type
+        };
+
         try {
             if (editingCategory) {
-                await categoryService.update(editingCategory.id, formData);
+                await categoryService.update(editingCategory.id, payload);
             } else {
-                await categoryService.create(formData);
+                await categoryService.create(payload);
             }
             setModalOpen(false);
             loadCategories();
         } catch (err) {
-            alert(err.response?.data?.detail || 'Erro ao salvar categoria');
+            setError(formatApiError(err, 'Erro ao salvar categoria'));
         }
     };
 
@@ -145,6 +164,11 @@ export default function CategoriesPage() {
                 title={editingCategory ? 'Editar Categoria' : 'Nova Categoria'}
             >
                 <form onSubmit={handleSubmit} className="space-y-4">
+                    {error && (
+                        <div className="bg-red-500/10 border border-red-500 text-red-500 rounded-lg p-3 text-sm">
+                            {error}
+                        </div>
+                    )}
                     <Input
                         label="Nome"
                         placeholder="Ex: Alimentação"
