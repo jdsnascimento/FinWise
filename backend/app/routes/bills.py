@@ -39,6 +39,7 @@ async def list_bills(
     billing_month: Optional[date] = None,
     search: Optional[str] = None,
     current_user: User = Depends(get_current_user),
+    
     db: Session = Depends(get_db)
 ):
     """Lista contas com filtros"""
@@ -116,3 +117,5 @@ async def delete_bill(
 ):
     """Exclui uma conta pendente"""
     return BillService.delete_bill(db, bill_id, current_user.id)
+
+    

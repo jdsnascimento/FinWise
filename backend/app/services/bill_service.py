@@ -18,31 +18,29 @@ class BillService:
     @staticmethod
     def calculate_billing_month(purchase_date: date, closing_day: int) -> date:
         """
-        Determina o mês da fatura baseado na data da compra e fechamento do cartão
-        
-        Regra:
-        - Compra antes ou no dia do fechamento → fatura MESMO mês
-        - Compra depois do fechamento → fatura PRÓXIMO mês
+        Exemplo: cartão fecha dia 31
+        - Compra 17/05 → vence em JUNHO (billing_month = 2026-06-01)
+        - Compra 01/06 → vence em JULHO (billing_month = 2026-07-01)
         """
         if purchase_date.day <= closing_day:
-            # Fatura do mês atual
-            return purchase_date.replace(day=1)
+            # A compra entra na fatura que fecha este mês e vence no mês seguinte
+            next_month = purchase_date.replace(day=1) + relativedelta(months=1)
+            return next_month
         else:
-            # Fatura do próximo mês
-            return (purchase_date.replace(day=1) + relativedelta(months=1))
+            # A compra entra na fatura do mês que vem e vence no mês seguinte a esse
+            next_month = purchase_date.replace(day=1) + relativedelta(months=2)
+            return next_month
     
     @staticmethod
     def calculate_due_date(billing_month: date, due_day: int) -> date:
-        """Calcula data de vencimento baseado no mês da fatura e dia de vencimento"""
-        # Pegar último dia do mês
+        """Retorna o dia de vencimento no mês de cobrança (billing_month)"""
         last_day = calendar.monthrange(billing_month.year, billing_month.month)[1]
         actual_due_day = min(due_day, last_day)
-        
         return billing_month.replace(day=actual_due_day)
     
     @staticmethod
     def create_bill(db: Session, user_id: int, bill_data: BillCreate):
-        """Cria uma nova conta a pagar com geração automática de parcelas"""
+        """Cria uma nova conta a pagar com geração automática de parcelas ou recorrência"""
         
         # Validar categoria
         category = db.query(Category).filter(
@@ -57,7 +55,7 @@ class BillService:
                 detail="Categoria inválida ou não encontrada"
             )
         
-        # Se for cartão de crédito, validar e calcular datas
+        # Se for cartão de crédito, validar e calcular datas iniciais
         card = None
         if bill_data.payment_type == PaymentType.CREDIT_CARD:
             if not bill_data.card_id:
@@ -85,70 +83,103 @@ class BillService:
                     detail=f"Limite insuficiente! Disponível: R$ {card.available_limit:,.2f}"
                 )
             
-            # Calcular mês da fatura e vencimento
+            # Calcular mês da fatura e vencimento inicial
             billing_month = BillService.calculate_billing_month(
                 bill_data.purchase_date, 
                 card.closing_day
             )
             due_date = BillService.calculate_due_date(billing_month, card.due_day)
         else:
-            # Para pagamentos à vista, usar data atual ou data fornecida
+            # Para pagamentos à vista ou recorrentes normais, usar data atual ou fornecida
             billing_month = bill_data.purchase_date.replace(day=1)
             due_date = bill_data.due_date or bill_data.purchase_date
         
-        # Criar a conta principal
-        bill = Bill(
-            user_id=user_id,
-            card_id=bill_data.card_id,
-            category_id=bill_data.category_id,
-            description=bill_data.description,
-            amount=bill_data.amount,
-            total_amount=bill_data.total_amount,
-            installments=bill_data.installments,
-            current_installment=1,
-            purchase_date=bill_data.purchase_date,
-            due_date=due_date,
-            billing_month=billing_month,
-            status=BillStatus.PENDING,
-            payment_type=bill_data.payment_type,
-            source=bill_data.source if hasattr(bill_data, 'source') else 'manual',
-            notes=bill_data.notes
-        )
+        first_bill = None
         
-        db.add(bill)
-        db.flush()  # Para obter o ID
-        
-        # Criar parcelas
-        installments_created = []
-        
-        if bill_data.installments > 1 and bill_data.payment_type == PaymentType.CREDIT_CARD:
+        if bill_data.installments > 1:
+            # Compra parcelada ou recorrente - Criar N registros Bill independentes
+            base_description = bill_data.description
+            
+            # O valor enviado (amount) representa o total. O valor de cada parcela é total / parcelas.
+            total = Decimal(str(bill_data.amount))
+            installments = bill_data.installments
+            installment_amount = (total / installments).quantize(Decimal('0.01'))
+            
             for i in range(bill_data.installments):
                 installment_number = i + 1
+                desc = f"{base_description} ({installment_number}/{bill_data.installments})"
                 
-                # Calcular mês da fatura para cada parcela
-                installment_billing = billing_month + relativedelta(months=i)
-                installment_due = BillService.calculate_due_date(
-                    installment_billing, 
-                    card.due_day
+                if bill_data.payment_type == PaymentType.CREDIT_CARD:
+                    installment_billing = billing_month + relativedelta(months=i)
+                    installment_due = BillService.calculate_due_date(installment_billing, card.due_day)
+                else:
+                    installment_billing = billing_month + relativedelta(months=i)
+                    if bill_data.due_date:
+                        installment_due = bill_data.due_date + relativedelta(months=i)
+                    else:
+                        installment_due = bill_data.purchase_date + relativedelta(months=i)
+                
+                # Ajusta a última parcela com o resto da divisão para fechar o total exato
+                if i < installments - 1:
+                    current_amount = installment_amount
+                else:
+                    current_amount = total - (installment_amount * (installments - 1))
+                
+                bill = Bill(
+                    user_id=user_id,
+                    card_id=bill_data.card_id,
+                    category_id=bill_data.category_id,
+                    description=desc,
+                    amount=current_amount,
+                    total_amount=current_amount,  # Cada parcela/mês tem seu total_amount igual a amount para somar perfeitamente nos relatórios mensais
+                    installments=bill_data.installments,
+                    current_installment=installment_number,
+                    purchase_date=bill_data.purchase_date,
+                    due_date=installment_due,
+                    billing_month=installment_billing,
+                    status=BillStatus.PENDING,
+                    payment_type=bill_data.payment_type,
+                    source=bill_data.source if hasattr(bill_data, 'source') else 'manual',
+                    notes=bill_data.notes
                 )
+                db.add(bill)
+                db.flush()  # Para obter o ID
                 
+                # Criar o BillInstallment correspondente para manter compatibilidade com o ORM e schemas
                 installment = BillInstallment(
                     bill_id=bill.id,
                     installment_number=installment_number,
-                    amount=bill_data.amount,
+                    amount=current_amount,
                     due_date=installment_due,
                     billing_month=installment_billing,
                     status=BillStatus.PENDING
                 )
-                
                 db.add(installment)
-                installments_created.append({
-                    'number': installment_number,
-                    'due_date': installment_due,
-                    'billing_month': installment_billing
-                })
+                
+                if i == 0:
+                    first_bill = bill
         else:
-            # Compra à vista - 1 parcela
+            # Compra à vista - 1 parcela normal
+            bill = Bill(
+                user_id=user_id,
+                card_id=bill_data.card_id,
+                category_id=bill_data.category_id,
+                description=bill_data.description,
+                amount=bill_data.amount,
+                total_amount=bill_data.total_amount or bill_data.amount,
+                installments=1,
+                current_installment=1,
+                purchase_date=bill_data.purchase_date,
+                due_date=due_date,
+                billing_month=billing_month,
+                status=BillStatus.PENDING,
+                payment_type=bill_data.payment_type,
+                source=bill_data.source if hasattr(bill_data, 'source') else 'manual',
+                notes=bill_data.notes
+            )
+            db.add(bill)
+            db.flush()
+            
             installment = BillInstallment(
                 bill_id=bill.id,
                 installment_number=1,
@@ -158,19 +189,43 @@ class BillService:
                 status=BillStatus.PENDING
             )
             db.add(installment)
+            first_bill = bill
         
-        # Atualizar limite do cartão
-        if card:
-            card.available_limit -= bill_data.total_amount
+        # Recalcular limite do cartão
+        if bill_data.payment_type == PaymentType.CREDIT_CARD and bill_data.card_id:
+            from .credit_card_service import CreditCardService
+            CreditCardService.recalculate_available_limit(db, bill_data.card_id)
         
         db.commit()
-        db.refresh(bill)
+        db.refresh(first_bill)
         
-        return bill
+        return first_bill
+    
+    @staticmethod
+    def mark_overdue_bills(db: Session, user_id: int) -> int:
+        """Marca contas pendentes com vencimento passado como vencidas."""
+        today = date.today()
+        overdue_bills = db.query(Bill).filter(
+            Bill.user_id == user_id,
+            Bill.status == BillStatus.PENDING,
+            Bill.due_date < today
+        ).all()
+
+        for bill in overdue_bills:
+            bill.status = BillStatus.OVERDUE
+            for installment in bill.installments_list:
+                if installment.status == BillStatus.PENDING:
+                    installment.status = BillStatus.OVERDUE
+
+        if overdue_bills:
+            db.commit()
+
+        return len(overdue_bills)
     
     @staticmethod
     def get_user_bills(db: Session, user_id: int, filters: BillFilter = None):
         """Lista contas do usuário com filtros"""
+        BillService.mark_overdue_bills(db, user_id)
         query = db.query(Bill).filter(Bill.user_id == user_id)
         
         if filters:
@@ -210,6 +265,7 @@ class BillService:
     @staticmethod
     def get_bill_by_id(db: Session, bill_id: int, user_id: int):
         """Busca conta específica"""
+        BillService.mark_overdue_bills(db, user_id)
         bill = db.query(Bill).filter(
             Bill.id == bill_id,
             Bill.user_id == user_id
@@ -234,8 +290,12 @@ class BillService:
     def update_bill(db: Session, bill_id: int, user_id: int, bill_data: BillUpdate):
         """Atualiza conta existente"""
         bill = BillService.get_bill_by_id(db, bill_id, user_id)
-        
-        # Se estiver pagando a conta
+        # Rastrear cartões possivelmente afetados
+        affected_card_ids = set()
+        if bill.card_id:
+            affected_card_ids.add(bill.card_id)
+            
+        # Tratar alteração de status
         if bill_data.status == BillStatus.PAID and bill.status != BillStatus.PAID:
             bill.status = BillStatus.PAID
             bill.paid_at = datetime.utcnow()
@@ -245,30 +305,43 @@ class BillService:
                 if installment.status == BillStatus.PENDING:
                     installment.status = BillStatus.PAID
                     installment.paid_at = datetime.utcnow()
-            
-            # Liberar limite do cartão
-            if bill.card:
-                bill.card.available_limit += bill.total_amount
         
-        # Se estiver cancelando
         elif bill_data.status == BillStatus.CANCELLED and bill.status != BillStatus.CANCELLED:
-            old_status = bill.status
             bill.status = BillStatus.CANCELLED
             
             # Cancelar todas as parcelas pendentes
             for installment in bill.installments_list:
                 if installment.status == BillStatus.PENDING:
                     installment.status = BillStatus.CANCELLED
-            
-            # Liberar limite do cartão
-            if bill.card and old_status in [BillStatus.PENDING, BillStatus.OVERDUE]:
-                bill.card.available_limit += bill.total_amount
         
         # Atualizar outros campos
         update_data = bill_data.dict(exclude_unset=True, exclude={'status'})
+        
+        # Se alterou o valor da conta (amount)
+        if 'amount' in update_data and update_data['amount'] is not None:
+            new_amount = update_data['amount']
+            bill.amount = new_amount
+            bill.total_amount = new_amount
+            del update_data['amount']
+            if 'total_amount' in update_data:
+                del update_data['total_amount']
+
+        # Se alterou o cartão ou outras propriedades
+        if 'card_id' in update_data:
+            if update_data['card_id']:
+                affected_card_ids.add(update_data['card_id'])
+
         for field, value in update_data.items():
             if value is not None:
                 setattr(bill, field, value)
+                
+        db.flush()
+        
+        # Recalcular limite disponível dos cartões afetados
+        if affected_card_ids:
+            from .credit_card_service import CreditCardService
+            for cid in affected_card_ids:
+                CreditCardService.recalculate_available_limit(db, cid)
         
         db.commit()
         db.refresh(bill)
@@ -286,26 +359,30 @@ class BillService:
                 detail="Apenas contas pendentes podem ser excluídas"
             )
         
-        # Liberar limite do cartão
-        if bill.card:
-            bill.card.available_limit += bill.total_amount
+        card_id = bill.card_id
         
         db.delete(bill)
+        db.flush()
+        
+        # Recalcular limite do cartão
+        if card_id:
+            from .credit_card_service import CreditCardService
+            CreditCardService.recalculate_available_limit(db, card_id)
+            
         db.commit()
         
-        return {"message": "Conta excluída com sucesso"}
-    
+        return {"message": "Conta excluída com sucesso"}    
     @staticmethod
     def get_bills_summary(db: Session, user_id: int, billing_month: date = None):
         """Retorna resumo financeiro"""
+        BillService.mark_overdue_bills(db, user_id)
         if not billing_month:
             billing_month = date.today().replace(day=1)
         
-        # Próximo vencimento
+        # Próximo vencimento (pendentes ou já vencidas)
         next_due = db.query(Bill).filter(
             Bill.user_id == user_id,
-            Bill.status == BillStatus.PENDING,
-            Bill.due_date >= date.today()
+            Bill.status.in_([BillStatus.PENDING, BillStatus.OVERDUE])
         ).order_by(Bill.due_date.asc()).first()
         
         # Totais

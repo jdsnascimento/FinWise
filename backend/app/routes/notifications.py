@@ -4,6 +4,7 @@ from sqlalchemy.orm import Session
 from ..database import get_db
 from ..models.user import User
 from ..services.notification_service import NotificationService
+from ..services.bill_service import BillService
 from ..utils.dependencies import get_current_user
 
 router = APIRouter(prefix="/api/notifications", tags=["notifications"])
@@ -14,6 +15,7 @@ async def get_upcoming_bills(
     db: Session = Depends(get_db)
 ):
     """Verifica contas próximas do vencimento"""
+    BillService.mark_overdue_bills(db, current_user.id)
     notifications = NotificationService.check_upcoming_bills(db)
     # Filtrar apenas do usuário atual
     return [n for n in notifications if n['user_id'] == current_user.id]
@@ -24,5 +26,6 @@ async def get_card_alerts(
     db: Session = Depends(get_db)
 ):
     """Verifica alertas de limite dos cartões"""
+    BillService.mark_overdue_bills(db, current_user.id)
     alerts = NotificationService.check_card_limits(db)
     return [a for a in alerts if a['user_id'] == current_user.id]

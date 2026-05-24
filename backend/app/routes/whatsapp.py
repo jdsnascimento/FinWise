@@ -1,3 +1,4 @@
+import logging
 from sqlalchemy import func
 from decimal import Decimal
 from fastapi import APIRouter, Request, HTTPException, Depends
@@ -13,12 +14,13 @@ from ..models.bill import Bill, BillStatus
 from ..services.whatsapp_service import whatsapp_service
 from ..services.bill_service import BillService
 from ..services.income_service import IncomeService
-from ..schemas.bill import BillCreate, PaymentTypeEnum
+from ..schemas.bill import BillCreate, PaymentTypeEnum, BillSourceEnum
 from ..schemas.income import IncomeCreate
 from ..utils.dependencies import get_current_user
 from datetime import date
 
 router = APIRouter(prefix="/api/whatsapp", tags=["whatsapp"])
+logger = logging.getLogger(__name__)
 
 class CreateInstanceRequest(BaseModel):
     instance_name: str
@@ -123,9 +125,10 @@ async def get_instance_status(
 
 def get_pending_bills_summary(db: Session, user_id: int) -> str:
     """Gera resumo de contas pendentes para enviar via WhatsApp"""
+    BillService.mark_overdue_bills(db, user_id)
     pending_bills = db.query(Bill).filter(
         Bill.user_id == user_id,
-        Bill.status == BillStatus.PENDING
+        Bill.status.in_([BillStatus.PENDING, BillStatus.OVERDUE])
     ).order_by(Bill.due_date.asc()).limit(10).all()
     
     if not pending_bills:
@@ -158,7 +161,7 @@ async def whatsapp_webhook(request: Request, db: Session = Depends(get_db)):
     try:
         data = await request.json()
         
-        print(f"[WEBHOOK] Evento recebido: {data.get('event', 'unknown')}")
+        logger.info("Webhook evento recebido: %s", data.get('event', 'unknown'))
         
         # Verificar se é evento de mensagem (suporta v1 e v2)
         event = data.get("event", "")
@@ -183,10 +186,13 @@ async def whatsapp_webhook(request: Request, db: Session = Depends(get_db)):
             text = message_data["extendedTextMessage"]["text"]
             
         if not text:
-            print(f"[WEBHOOK] Mensagem sem texto. messageType: {data_obj.get('messageType', 'unknown')}")
+            logger.debug(
+                "Mensagem sem texto. messageType: %s",
+                data_obj.get('messageType', 'unknown')
+            )
             return {"status": "ignored", "reason": "no text found"}
         
-        print(f"[WEBHOOK] Texto: {text} | fromMe: {key.get('fromMe', False)}")
+        logger.info("Webhook texto: %s | fromMe: %s", text, key.get('fromMe', False))
         
         sender = key.get("remoteJid", "").split("@")[0]
         is_from_me = key.get("fromMe", False)
@@ -198,7 +204,7 @@ async def whatsapp_webhook(request: Request, db: Session = Depends(get_db)):
         ).first()
         
         if not instance:
-            print(f"[WEBHOOK] Instância não encontrada: {instance_name}")
+            logger.warning("Instância não encontrada: %s", instance_name)
             return {"status": "error", "message": "Instância não encontrada"}
         
         # Se é fromMe, o sender é o próprio usuário, usar o número da instância
@@ -237,135 +243,146 @@ async def whatsapp_webhook(request: Request, db: Session = Depends(get_db)):
         parsed = whatsapp_service.parse_financial_message(text)
         
         if parsed['amount'] and parsed['confidence'] > 30:
-            # Buscar categoria do usuário
-            category = None
-            target_type = 'income' if parsed['type'] == 'income' else 'expense'
-            
-            if parsed.get('category_hint'):
-                category = db.query(Category).filter(
-                    Category.user_id == instance.user_id,
-                    Category.type == target_type,
-                    Category.name.ilike(f"%{parsed['category_hint']}%"),
-                    Category.active == True
-                ).first()
+            try:
+                # Buscar categoria do usuário
+                category = None
+                target_type = 'income' if parsed['type'] == 'income' else 'expense'
                 
-            if not category:
-                category = db.query(Category).filter(
-                    Category.user_id == instance.user_id,
-                    Category.type == target_type,
-                    Category.active == True
-                ).first()
-                
-            if not category:
-                # Se não tiver categorias, cria as padrão
-                from ..routes.categories import create_default_categories
-                cats = create_default_categories(db, instance.user_id)
-                for c in cats:
-                    if c.type == target_type:
-                        category = c
-                        break
-            
-            if not category:
-                await whatsapp_service.send_message(
-                    instance_name, reply_to,
-                    "❌ Erro: nenhuma categoria encontrada. Acesse o FinWise e configure suas categorias."
-                )
-                return {"status": "error", "message": "Nenhuma categoria encontrada"}
-
-            # Salvar no banco
-            if parsed['type'] == 'income':
-                # Criar receita
-                income_data = IncomeCreate(
-                    description=parsed['description'] or 'Receita via WhatsApp',
-                    amount=Decimal(str(parsed['amount'])),
-                    expected_date=date.today(),
-                    category_id=category.id,
-                    notes=f"Mensagem original: {text}"
-                )
-                IncomeService.create_income(db, instance.user_id, income_data)
-                
-                await whatsapp_service.send_message(
-                    instance_name, reply_to,
-                    f"✅ *Receita registrada!*\n"
-                    f"📝 {parsed['description'] or 'Receita'}\n"
-                    f"💰 R$ {parsed['amount']:,.2f}\n"
-                    f"📂 {category.name}"
-                )
-            else:
-                # Mapear payment_method para PaymentTypeEnum
-                payment_map = {
-                    'credit_card': PaymentTypeEnum.CREDIT_CARD,
-                    'debito': PaymentTypeEnum.DEBIT_CARD,
-                    'debit_card': PaymentTypeEnum.DEBIT_CARD,
-                    'dinheiro': PaymentTypeEnum.CASH,
-                    'cash': PaymentTypeEnum.CASH,
-                    'pix': PaymentTypeEnum.PIX,
-                    'boleto': PaymentTypeEnum.BOLETO,
-                    'transfer': PaymentTypeEnum.TRANSFER
-                }
-                payment_type = payment_map.get(parsed.get('payment_method'), PaymentTypeEnum.CASH)
-                
-                card_id = None
-                card_name = None
-                if payment_type == PaymentTypeEnum.CREDIT_CARD:
-                    card = None
-                    if parsed.get('card_hint'):
-                        card = db.query(CreditCard).filter(
-                            CreditCard.user_id == instance.user_id,
-                            CreditCard.active == True,
-                            CreditCard.name.ilike(f"%{parsed['card_hint']}%")
-                        ).first()
+                if parsed.get('category_hint'):
+                    category = db.query(Category).filter(
+                        Category.user_id == instance.user_id,
+                        Category.type == target_type,
+                        Category.name.ilike(f"%{parsed['category_hint']}%"),
+                        Category.active == True
+                    ).first()
                     
-                    if not card:
-                        card = db.query(CreditCard).filter(
-                            CreditCard.user_id == instance.user_id,
-                            CreditCard.active == True
-                        ).first()
+                if not category:
+                    category = db.query(Category).filter(
+                        Category.user_id == instance.user_id,
+                        Category.type == target_type,
+                        Category.active == True
+                    ).first()
+                    
+                if not category:
+                    # Se não tiver categorias, cria as padrão
+                    from ..routes.categories import create_default_categories
+                    cats = create_default_categories(db, instance.user_id)
+                    for c in cats:
+                        if c.type == target_type:
+                            category = c
+                            break
+                
+                if not category:
+                    await whatsapp_service.send_message(
+                        instance_name, reply_to,
+                        "❌ Erro: nenhuma categoria encontrada. Acesse o FinWise e configure suas categorias."
+                    )
+                    return {"status": "error", "message": "Nenhuma categoria encontrada"}
+
+                # Salvar no banco
+                if parsed['type'] == 'income':
+                    # Criar receita
+                    income_data = IncomeCreate(
+                        description=parsed['description'] or 'Receita via WhatsApp',
+                        amount=Decimal(str(parsed['amount'])),
+                        expected_date=date.today(),
+                        category_id=category.id,
+                        notes=f"Mensagem original: {text}"
+                    )
+                    IncomeService.create_income(db, instance.user_id, income_data)
+                    
+                    await whatsapp_service.send_message(
+                        instance_name, reply_to,
+                        f"✅ *Receita registrada!*\n"
+                        f"📝 {parsed['description'] or 'Receita'}\n"
+                        f"💰 R$ {parsed['amount']:,.2f}\n"
+                        f"📂 {category.name}"
+                    )
+                else:
+                    # Mapear payment_method para PaymentTypeEnum
+                    payment_map = {
+                        'credit_card': PaymentTypeEnum.CREDIT_CARD,
+                        'debito': PaymentTypeEnum.DEBIT_CARD,
+                        'debit_card': PaymentTypeEnum.DEBIT_CARD,
+                        'dinheiro': PaymentTypeEnum.CASH,
+                        'cash': PaymentTypeEnum.CASH,
+                        'pix': PaymentTypeEnum.PIX,
+                        'boleto': PaymentTypeEnum.BOLETO,
+                        'transfer': PaymentTypeEnum.TRANSFER
+                    }
+                    payment_type = payment_map.get(parsed.get('payment_method'), PaymentTypeEnum.CASH)
+                    
+                    card_id = None
+                    card_name = None
+                    if payment_type == PaymentTypeEnum.CREDIT_CARD:
+                        card = None
+                        if parsed.get('card_hint'):
+                            card = db.query(CreditCard).filter(
+                                CreditCard.user_id == instance.user_id,
+                                CreditCard.active == True,
+                                CreditCard.name.ilike(f"%{parsed['card_hint']}%")
+                            ).first()
                         
-                    if card:
-                        card_id = card.id
-                        card_name = card.name
-                    else:
-                        # Se não tem cartão cadastrado, muda para PIX
-                        payment_type = PaymentTypeEnum.PIX
+                        if not card:
+                            card = db.query(CreditCard).filter(
+                                CreditCard.user_id == instance.user_id,
+                                CreditCard.active == True
+                            ).first()
+                            
+                        if card:
+                            card_id = card.id
+                            card_name = card.name
+                        else:
+                            # Se não tem cartão cadastrado, muda para PIX
+                            payment_type = PaymentTypeEnum.PIX
 
-                # Criar despesa
-                bill_data = BillCreate(
-                    description=parsed['description'] or 'Gasto via WhatsApp',
-                    amount=Decimal(str(parsed['amount'])),
-                    installments=parsed['installments'],
-                    purchase_date=date.today(),
-                    category_id=category.id,
-                    card_id=card_id,
-                    payment_type=payment_type,
-                    notes=f"Mensagem original: {text}"
-                )
-                BillService.create_bill(db, instance.user_id, bill_data)
-                
-                # Montar mensagem de confirmação
-                confirm_msg = (
-                    f"✅ *Despesa registrada!*\n"
-                    f"📝 {parsed['description'] or 'Gasto'}\n"
-                    f"💰 R$ {parsed['amount']:,.2f}\n"
-                    f"📂 {category.name}"
-                )
-                if parsed['installments'] > 1:
-                    confirm_msg += f"\n🔄 {parsed['installments']}x de R$ {parsed['amount']:,.2f}"
-                if card_name:
-                    confirm_msg += f"\n💳 {card_name}"
+                    # Criar despesa
+                    bill_data = BillCreate(
+                        description=parsed['description'] or 'Gasto via WhatsApp',
+                        amount=Decimal(str(parsed['amount'])),
+                        installments=parsed['installments'],
+                        purchase_date=date.today(),
+                        category_id=category.id,
+                        card_id=card_id,
+                        payment_type=payment_type,
+                        source=BillSourceEnum.WHATSAPP,
+                        notes=f"Mensagem original: {text}"
+                    )
+                    BillService.create_bill(db, instance.user_id, bill_data)
                     
-                payment_labels = {
-                    PaymentTypeEnum.PIX: "PIX",
-                    PaymentTypeEnum.CASH: "Dinheiro",
-                    PaymentTypeEnum.DEBIT_CARD: "Débito",
-                    PaymentTypeEnum.BOLETO: "Boleto",
-                    PaymentTypeEnum.CREDIT_CARD: "Crédito"
-                }
-                confirm_msg += f"\n💱 {payment_labels.get(payment_type, 'Outro')}"
+                    # Montar mensagem de confirmação
+                    confirm_msg = (
+                        f"✅ *Despesa registrada!*\n"
+                        f"📝 {parsed['description'] or 'Gasto'}\n"
+                        f"💰 R$ {parsed['amount']:,.2f}\n"
+                        f"📂 {category.name}"
+                    )
+                    if parsed['installments'] > 1:
+                        installment_val = parsed['amount'] / parsed['installments']
+                        confirm_msg += f"\n🔄 {parsed['installments']}x de R$ {installment_val:,.2f}"
+                    if card_name:
+                        confirm_msg += f"\n💳 {card_name}"
+                        
+                    payment_labels = {
+                        PaymentTypeEnum.PIX: "PIX",
+                        PaymentTypeEnum.CASH: "Dinheiro",
+                        PaymentTypeEnum.DEBIT_CARD: "Débito",
+                        PaymentTypeEnum.BOLETO: "Boleto",
+                        PaymentTypeEnum.CREDIT_CARD: "Crédito"
+                    }
+                    confirm_msg += f"\n💱 {payment_labels.get(payment_type, 'Outro')}"
+                    
+                    await whatsapp_service.send_message(instance_name, reply_to, confirm_msg)
                 
-                await whatsapp_service.send_message(instance_name, reply_to, confirm_msg)
-            
-            return {"status": "processed", "parsed": parsed}
+                return {"status": "processed", "parsed": parsed}
+            except HTTPException as he:
+                error_msg = f"❌ Erro ao registrar: {he.detail}"
+                await whatsapp_service.send_message(instance_name, reply_to, error_msg)
+                raise he
+            except Exception as ex:
+                error_msg = f"❌ Erro ao registrar: {str(ex)}"
+                await whatsapp_service.send_message(instance_name, reply_to, error_msg)
+                raise ex
         else:
             # Mensagem não reconhecida como financeira
             if is_from_me:
@@ -383,9 +400,7 @@ async def whatsapp_webhook(request: Request, db: Session = Depends(get_db)):
             return {"status": "low_confidence", "parsed": parsed}
         
     except Exception as e:
-        import traceback
-        print(f"[WEBHOOK] Erro: {e}")
-        print(traceback.format_exc())
+        logger.exception("Erro no webhook WhatsApp: %s", e)
         return {"status": "error", "message": str(e)}
 
 @router.post("/test-message")

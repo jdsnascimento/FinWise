@@ -3,6 +3,7 @@ import { forwardRef } from 'react';
 const Input = forwardRef(({
     label,
     error,
+    helper,
     icon: Icon,
     className = '',
     ...props
@@ -37,6 +38,9 @@ const Input = forwardRef(({
             </div>
             {error && (
                 <p className="text-sm text-red-500">{error}</p>
+            )}
+            {helper && !error && (
+                <p className="text-sm text-gray-400">{helper}</p>
             )}
         </div>
     );

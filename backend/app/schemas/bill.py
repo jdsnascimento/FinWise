@@ -42,11 +42,9 @@ class BillCreate(BillBase):
 
     @validator('total_amount', always=True)
     def set_total_amount(cls, v, values):
-        """Calcula valor total automaticamente"""
+        """Define o total_amount igual ao amount (pois o amount agora representa o valor total da compra)"""
         if v is None:
-            amount = values.get('amount', 0)
-            installments = values.get('installments', 1)
-            return amount * installments
+            return values.get('amount', 0)
         return v
 
 class BillUpdate(BaseModel):

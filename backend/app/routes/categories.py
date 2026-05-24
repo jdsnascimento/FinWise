@@ -26,6 +26,7 @@ DEFAULT_EXPENSE_CATEGORIES = [
     {"name": "Lazer", "icon": "gamepad", "color": "#06b6d4", "type": "expense"},
     {"name": "Mercado", "icon": "cart", "color": "#84cc16", "type": "expense"},
     {"name": "Assinaturas", "icon": "credit-card", "color": "#64748b", "type": "expense"},
+    {"name": "Pet", "icon": "credit-card", "color": "#2eba66", "type": "expense"},
 ]
 
 DEFAULT_INCOME_CATEGORIES = [

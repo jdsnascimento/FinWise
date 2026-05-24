@@ -1,10 +1,9 @@
-import { List, Bell, UserCircle } from '@phosphor-icons/react';
+import { List, UserCircle } from '@phosphor-icons/react';
 import { useAuth } from '../../contexts/AuthContext';
-import { useState } from 'react';
+import NotificationsDropdown from './NotificationsDropdown';
 
 export default function Header({ onMenuClick }) {
     const { user } = useAuth();
-    const [showNotifications, setShowNotifications] = useState(false);
 
     return (
         <header className="h-16 bg-gray-900 border-b border-gray-800 flex items-center justify-between px-4 lg:px-6">
@@ -22,15 +21,7 @@ export default function Header({ onMenuClick }) {
             {/* Ações */}
             <div className="flex items-center gap-2">
                 {/* Notificações */}
-                <div className="relative">
-                    <button
-                        onClick={() => setShowNotifications(!showNotifications)}
-                        className="p-2 hover:bg-gray-800 rounded-lg transition-colors text-gray-400 relative"
-                    >
-                        <Bell size={20} />
-                        <span className="absolute top-1.5 right-1.5 w-2 h-2 bg-emerald-500 rounded-full" />
-                    </button>
-                </div>
+                <NotificationsDropdown />
 
                 {/* Perfil */}
                 <div className="flex items-center gap-3 pl-4 border-l border-gray-700">

@@ -1,14 +1,34 @@
+import calendar
 from sqlalchemy.orm import Session
 from sqlalchemy import func
 from decimal import Decimal
 from datetime import date
+from dateutil.relativedelta import relativedelta
 from ..models.credit_card import CreditCard
-from ..models.bill import Bill, BillStatus
+from ..models.bill import Bill, BillStatus, PaymentType
 from ..schemas.credit_card import CreditCardCreate, CreditCardUpdate
 from fastapi import HTTPException, status
 
 class CreditCardService:
     
+    @staticmethod
+    def recalculate_available_limit(db: Session, card_id: int):
+        """Recalcula o limite disponível de um cartão com base nas despesas pendentes/vencidas"""
+        card = db.query(CreditCard).filter(CreditCard.id == card_id).first()
+        if not card:
+            return None
+        
+        # Somar as despesas pendentes/vencidas no cartão
+        total_spent = db.query(func.sum(Bill.amount)).filter(
+            Bill.card_id == card.id,
+            Bill.status.in_([BillStatus.PENDING, BillStatus.OVERDUE]),
+            Bill.payment_type == PaymentType.CREDIT_CARD
+        ).scalar() or Decimal('0')
+        
+        card.available_limit = card.limit_amount - total_spent
+        db.flush()
+        return card
+
     @staticmethod
     def get_user_cards(db: Session, user_id: int, active_only: bool = False):
         """Lista todos os cartões do usuário"""
@@ -73,28 +93,18 @@ class CreditCardService:
         # Atualizar campos
         update_data = card_data.dict(exclude_unset=True)
         
-        # Se alterou o limite, recalcular disponível
-        if 'limit_amount' in update_data:
-            old_limit = card.limit_amount
-            new_limit = update_data['limit_amount']
-            
-            # Calcular total gasto no cartão
-            total_spent = db.query(func.sum(Bill.total_amount)).filter(
-                Bill.card_id == card.id,
-                Bill.status == BillStatus.PENDING
-            ).scalar() or Decimal('0')
-            
-            # Novo disponível = novo limite - gastos pendentes
-            update_data['available_limit'] = new_limit - total_spent
-            
-            if update_data['available_limit'] < 0:
-                raise HTTPException(
-                    status_code=status.HTTP_400_BAD_REQUEST,
-                    detail="Novo limite é menor que o total de gastos pendentes"
-                )
-        
         for field, value in update_data.items():
             setattr(card, field, value)
+            
+        # Recalcular limite disponível com base nos dados atualizados
+        CreditCardService.recalculate_available_limit(db, card.id)
+        
+        if card.available_limit < 0:
+            db.rollback()
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Novo limite é menor que o total de gastos pendentes"
+            )
         
         db.commit()
         db.refresh(card)
@@ -109,7 +119,7 @@ class CreditCardService:
         # Verificar se há contas pendentes
         pending_bills = db.query(Bill).filter(
             Bill.card_id == card.id,
-            Bill.status == BillStatus.PENDING
+            Bill.status.in_([BillStatus.PENDING, BillStatus.OVERDUE])
         ).count()
         
         if pending_bills > 0:
@@ -146,34 +156,37 @@ class CreditCardService:
             "current_bill_total": monthly_spent,
             "usage_percentage": round(usage_percentage, 1),
             "next_closing_date": CreditCardService._calculate_next_closing(card.closing_day),
-            "next_due_date": CreditCardService._calculate_next_due(card.due_day)
+            "next_due_date": CreditCardService._calculate_next_due(card.due_day, card.closing_day)
         }
+    
+    @staticmethod
+    def _day_in_month(year: int, month: int, day: int) -> int:
+        """Retorna o dia efetivo no mês (ex.: 31 em fevereiro vira 28/29)."""
+        return min(day, calendar.monthrange(year, month)[1])
     
     @staticmethod
     def _calculate_next_closing(closing_day: int) -> date:
         """Calcula próxima data de fechamento"""
         today = date.today()
+        actual_closing = CreditCardService._day_in_month(
+            today.year, today.month, closing_day
+        )
         
-        if today.day <= closing_day:
-            # Fechamento ainda este mês
-            return today.replace(day=closing_day)
-        else:
-            # Fechamento próximo mês
-            if today.month == 12:
-                return date(today.year + 1, 1, closing_day)
-            else:
-                return date(today.year, today.month + 1, closing_day)
+        if today.day <= actual_closing:
+            return today.replace(day=actual_closing)
+        
+        next_month = today.replace(day=1) + relativedelta(months=1)
+        return next_month.replace(
+            day=CreditCardService._day_in_month(
+                next_month.year, next_month.month, closing_day
+            )
+        )
     
     @staticmethod
-    def _calculate_next_due(due_day: int) -> date:
-        """Calcula próximo vencimento"""
-        today = date.today()
-        closing_day = CreditCardService._calculate_next_closing(15).day  # Aproximado
-        
-        if today.day <= due_day:
-            return today.replace(day=due_day)
-        else:
-            if today.month == 12:
-                return date(today.year + 1, 1, due_day)
-            else:
-                return date(today.year, today.month + 1, due_day)
+    def _calculate_next_due(due_day: int, closing_day: int) -> date:
+        """Calcula próximo vencimento após o próximo fechamento da fatura."""
+        next_closing = CreditCardService._calculate_next_closing(closing_day)
+        due_month = next_closing.replace(day=1) + relativedelta(months=1)
+        return due_month.replace(
+            day=CreditCardService._day_in_month(due_month.year, due_month.month, due_day)
+        )

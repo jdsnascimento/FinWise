@@ -18,6 +18,7 @@ import Modal from '../../components/ui/Modal';
 import { billService } from '../../services/bill.service';
 import { creditCardService } from '../../services/credit-card.service';
 import { categoryService } from '../../services/category.service';
+import { formatCurrency, formatDate, formatApiError } from '../../utils/format';
 
 const PAYMENT_ICONS = {
     credit_card: CreditCard,
@@ -63,9 +64,10 @@ export default function BillsPage() {
             if (filters.billing_month) params.billing_month = filters.billing_month;
 
             const data = await billService.listAll(params);
-            setBills(data);
+            setBills(Array.isArray(data) ? data : []);
         } catch (err) {
             console.error('Erro ao carregar contas:', err);
+            setBills([]);
         } finally {
             setLoading(false);
         }
@@ -116,24 +118,42 @@ export default function BillsPage() {
         setError('');
 
         try {
-            const data = {
-                ...formData,
-                amount: parseFloat(formData.amount),
-                installments: parseInt(formData.installments),
-                category_id: parseInt(formData.category_id),
-                card_id: formData.payment_type === 'credit_card' ? parseInt(formData.card_id) : null
+            const installments = formData.payment_type === 'credit_card'
+                ? Math.max(1, Math.min(48, parseInt(formData.installments) || 1))
+                : 1;
+            const card_id = formData.payment_type === 'credit_card'
+                ? (parseInt(formData.card_id) || null)
+                : null;
+
+            const amount = parseFloat(formData.amount);
+            if (!Number.isFinite(amount) || amount <= 0) {
+                setError('Informe um valor válido maior que zero.');
+                return;
+            }
+
+            const payload = {
+                description: formData.description,
+                amount,
+                installments,
+                purchase_date: formData.purchase_date,
+                category_id: parseInt(formData.category_id, 10),
+                card_id,
+                payment_type: formData.payment_type,
+                notes: formData.notes || undefined
             };
 
             if (editingBill) {
-                await billService.update(editingBill.id, data);
+                await billService.update(editingBill.id, payload);
+                setModalOpen(false);
+                await loadBills();
             } else {
-                await billService.create(data);
+                await billService.create(payload);
+                setModalOpen(false);
+                // Limpa filtro de mês para exibir parcelas em meses futuros
+                setFilters((prev) => ({ ...prev, billing_month: '' }));
             }
-
-            setModalOpen(false);
-            loadBills();
         } catch (err) {
-            setError(err.response?.data?.detail || 'Erro ao salvar conta');
+            setError(formatApiError(err, 'Erro ao salvar conta'));
         }
     };
 
@@ -165,14 +185,6 @@ export default function BillsPage() {
         }
     };
 
-    const formatCurrency = (value) => {
-        return new Intl.NumberFormat('pt-BR', { style: 'currency', currency: 'BRL' }).format(value);
-    };
-
-    const formatDate = (dateStr) => {
-        return new Date(dateStr).toLocaleDateString('pt-BR');
-    };
-
     const getStatusBadge = (status) => {
         const statusMap = {
             pending: { variant: 'warning', label: 'Pendente' },
@@ -185,8 +197,20 @@ export default function BillsPage() {
     };
 
     const isOverdue = (bill) => {
-        return bill.status === 'pending' && new Date(bill.due_date) < new Date();
+        if (bill.status === 'overdue') return true;
+        if (bill.status !== 'pending' || !bill.due_date) return false;
+        const due = new Date(bill.due_date.includes('T') ? bill.due_date : `${bill.due_date}T12:00:00`);
+        const today = new Date();
+        today.setHours(0, 0, 0, 0);
+        return due < today;
     };
+
+    const selectedCard = formData.card_id ? cards.find(c => c.id === parseInt(formData.card_id)) : null;
+    const parsedAmount = parseFloat(formData.amount);
+    const exceedsLimit = formData.payment_type === 'credit_card' && 
+        selectedCard && 
+        !isNaN(parsedAmount) && 
+        parsedAmount > selectedCard.available_limit;
 
     return (
         <div className="space-y-6">
@@ -224,10 +248,10 @@ export default function BillsPage() {
                     </select>
                     <Input
                         type="month"
-                        value={filters.billing_month?.slice(0, 7)}
+                        value={filters.billing_month ? filters.billing_month.slice(0, 7) : ''}
                         onChange={(e) => setFilters({
                             ...filters,
-                            billing_month: e.target.value + '-01'
+                            billing_month: e.target.value ? `${e.target.value}-01` : ''
                         })}
                     />
                 </div>
@@ -455,6 +479,15 @@ export default function BillsPage() {
                                 </select>
                             </div>
 
+                            {exceedsLimit && (
+                                <div className="bg-amber-500/10 border border-amber-500 text-amber-400 rounded-lg p-3 text-sm flex items-start gap-2">
+                                    <span className="mt-0.5">⚠️</span>
+                                    <div>
+                                        <strong>Limite Excedido:</strong> Esta compra (<strong>{formatCurrency(parsedAmount)}</strong>) é maior que o limite disponível no cartão (<strong>{formatCurrency(selectedCard.available_limit)}</strong>).
+                                    </div>
+                                </div>
+                            )}
+
                             <Input
                                 label="Parcelas"
                                 type="number"
@@ -462,8 +495,8 @@ export default function BillsPage() {
                                 max="48"
                                 value={formData.installments}
                                 onChange={(e) => setFormData({ ...formData, installments: e.target.value })}
-                                helper={formData.amount ?
-                                    `${formData.installments}x de ${formatCurrency(formData.amount)} = ${formatCurrency(formData.amount * formData.installments)}`
+                                helper={formData.amount && parseInt(formData.installments) > 0 ?
+                                    `${formData.installments}x de ${formatCurrency(formData.amount / parseInt(formData.installments))} = ${formatCurrency(parseFloat(formData.amount))}`
                                     : ''
                                 }
                             />
