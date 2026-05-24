@@ -6,6 +6,7 @@ import {
     CheckCircle,
     XCircle,
     Trash,
+    PencilSimple,
     CreditCard,
     Money,
     Calendar
@@ -51,7 +52,8 @@ export default function BillsPage() {
         category_id: '',
         card_id: '',
         payment_type: 'credit_card',
-        notes: ''
+        notes: '',
+        due_date: ''
     });
     const [error, setError] = useState('');
 
@@ -107,7 +109,37 @@ export default function BillsPage() {
             category_id: categories[0]?.id || '',
             card_id: '',
             payment_type: 'credit_card',
-            notes: ''
+            notes: '',
+            due_date: ''
+        });
+        setError('');
+        setModalOpen(true);
+    };
+
+    const openEditModal = (bill) => {
+        if (bill.status !== 'pending' && bill.status !== 'overdue') {
+            alert('Apenas contas pendentes ou vencidas podem ser editadas.');
+            return;
+        }
+
+        const purchaseDate = bill.purchase_date
+            ? (typeof bill.purchase_date === 'string' ? bill.purchase_date.split('T')[0] : bill.purchase_date)
+            : new Date().toISOString().split('T')[0];
+        const dueDate = bill.due_date
+            ? (typeof bill.due_date === 'string' ? bill.due_date.split('T')[0] : bill.due_date)
+            : '';
+
+        setEditingBill(bill);
+        setFormData({
+            description: bill.description,
+            amount: String(bill.amount ?? bill.total_amount ?? ''),
+            installments: bill.installments ?? 1,
+            purchase_date: purchaseDate,
+            category_id: bill.category_id ? String(bill.category_id) : '',
+            card_id: bill.card_id ? String(bill.card_id) : '',
+            payment_type: bill.payment_type || 'credit_card',
+            notes: bill.notes || '',
+            due_date: dueDate
         });
         setError('');
         setModalOpen(true);
@@ -143,8 +175,17 @@ export default function BillsPage() {
             };
 
             if (editingBill) {
-                await billService.update(editingBill.id, payload);
+                const updatePayload = {
+                    description: payload.description,
+                    amount: payload.amount,
+                    category_id: payload.category_id,
+                    card_id: payload.card_id,
+                    due_date: formData.due_date || undefined,
+                    notes: payload.notes
+                };
+                await billService.update(editingBill.id, updatePayload);
                 setModalOpen(false);
+                setEditingBill(null);
                 await loadBills();
             } else {
                 await billService.create(payload);
@@ -355,6 +396,15 @@ export default function BillsPage() {
                                             </td>
                                             <td className="p-4">
                                                 <div className="flex items-center justify-end gap-1">
+                                                    {(bill.status === 'pending' || bill.status === 'overdue') && (
+                                                        <button
+                                                            onClick={() => openEditModal(bill)}
+                                                            className="p-2 hover:bg-blue-500/20 rounded-lg transition-colors text-gray-400 hover:text-blue-400"
+                                                            title="Editar"
+                                                        >
+                                                            <PencilSimple size={18} />
+                                                        </button>
+                                                    )}
                                                     {bill.status === 'pending' && (
                                                         <>
                                                             <button
@@ -394,7 +444,11 @@ export default function BillsPage() {
             {/* Modal Nova/Editar Conta */}
             <Modal
                 isOpen={modalOpen}
-                onClose={() => setModalOpen(false)}
+                onClose={() => {
+                    setModalOpen(false);
+                    setEditingBill(null);
+                    setError('');
+                }}
                 title={editingBill ? 'Editar Conta' : 'Nova Conta a Pagar'}
                 size="lg"
             >
@@ -432,33 +486,55 @@ export default function BillsPage() {
                         />
                     </div>
 
-                    <div>
-                        <label className="block text-sm font-medium text-gray-300 mb-1">
-                            Forma de Pagamento
-                        </label>
-                        <div className="grid grid-cols-3 gap-2">
-                            {[
-                                { value: 'credit_card', label: 'Crédito' },
-                                { value: 'debit_card', label: 'Débito' },
-                                { value: 'pix', label: 'PIX' },
-                                { value: 'cash', label: 'Dinheiro' },
-                                { value: 'boleto', label: 'Boleto' },
-                                { value: 'transfer', label: 'Transferência' }
-                            ].map((type) => (
-                                <button
-                                    key={type.value}
-                                    type="button"
-                                    onClick={() => setFormData({ ...formData, payment_type: type.value })}
-                                    className={`p-2 rounded-lg text-sm font-medium transition-colors ${formData.payment_type === type.value
-                                            ? 'bg-emerald-500 text-white'
-                                            : 'bg-gray-700 text-gray-300 hover:bg-gray-600'
-                                        }`}
-                                >
-                                    {type.label}
-                                </button>
-                            ))}
+                    {editingBill ? (
+                        <div className="bg-gray-700/50 rounded-lg p-3 text-sm text-gray-300 space-y-1">
+                            <p>
+                                <span className="text-gray-400">Pagamento:</span>{' '}
+                                {formData.payment_type === 'credit_card' ? 'Crédito' :
+                                    formData.payment_type === 'debit_card' ? 'Débito' :
+                                        formData.payment_type === 'pix' ? 'PIX' :
+                                            formData.payment_type === 'cash' ? 'Dinheiro' :
+                                                formData.payment_type === 'boleto' ? 'Boleto' : 'Transferência'}
+                            </p>
+                            {editingBill.installments > 1 && (
+                                <p>
+                                    <span className="text-gray-400">Parcela:</span>{' '}
+                                    {editingBill.current_installment}/{editingBill.installments}
+                                </p>
+                            )}
+                            <p className="text-xs text-gray-500">
+                                Forma de pagamento e parcelamento não podem ser alterados na edição.
+                            </p>
                         </div>
-                    </div>
+                    ) : (
+                        <div>
+                            <label className="block text-sm font-medium text-gray-300 mb-1">
+                                Forma de Pagamento
+                            </label>
+                            <div className="grid grid-cols-3 gap-2">
+                                {[
+                                    { value: 'credit_card', label: 'Crédito' },
+                                    { value: 'debit_card', label: 'Débito' },
+                                    { value: 'pix', label: 'PIX' },
+                                    { value: 'cash', label: 'Dinheiro' },
+                                    { value: 'boleto', label: 'Boleto' },
+                                    { value: 'transfer', label: 'Transferência' }
+                                ].map((type) => (
+                                    <button
+                                        key={type.value}
+                                        type="button"
+                                        onClick={() => setFormData({ ...formData, payment_type: type.value })}
+                                        className={`p-2 rounded-lg text-sm font-medium transition-colors ${formData.payment_type === type.value
+                                                ? 'bg-emerald-500 text-white'
+                                                : 'bg-gray-700 text-gray-300 hover:bg-gray-600'
+                                            }`}
+                                    >
+                                        {type.label}
+                                    </button>
+                                ))}
+                            </div>
+                        </div>
+                    )}
 
                     {formData.payment_type === 'credit_card' && (
                         <>
@@ -488,19 +564,31 @@ export default function BillsPage() {
                                 </div>
                             )}
 
-                            <Input
-                                label="Parcelas"
-                                type="number"
-                                min="1"
-                                max="48"
-                                value={formData.installments}
-                                onChange={(e) => setFormData({ ...formData, installments: e.target.value })}
-                                helper={formData.amount && parseInt(formData.installments) > 0 ?
-                                    `${formData.installments}x de ${formatCurrency(formData.amount / parseInt(formData.installments))} = ${formatCurrency(parseFloat(formData.amount))}`
-                                    : ''
-                                }
-                            />
+                            {!editingBill && (
+                                <Input
+                                    label="Parcelas"
+                                    type="number"
+                                    min="1"
+                                    max="48"
+                                    value={formData.installments}
+                                    onChange={(e) => setFormData({ ...formData, installments: e.target.value })}
+                                    helper={formData.amount && parseInt(formData.installments) > 0 ?
+                                        `${formData.installments}x de ${formatCurrency(formData.amount / parseInt(formData.installments))} = ${formatCurrency(parseFloat(formData.amount))}`
+                                        : ''
+                                    }
+                                />
+                            )}
                         </>
+                    )}
+
+                    {editingBill && (
+                        <Input
+                            label="Data de Vencimento"
+                            type="date"
+                            value={formData.due_date}
+                            onChange={(e) => setFormData({ ...formData, due_date: e.target.value })}
+                            required
+                        />
                     )}
 
                     <div>
@@ -529,7 +617,15 @@ export default function BillsPage() {
                         <Button type="submit" className="flex-1">
                             {editingBill ? 'Salvar' : 'Criar Conta'}
                         </Button>
-                        <Button type="button" variant="secondary" onClick={() => setModalOpen(false)}>
+                        <Button
+                            type="button"
+                            variant="secondary"
+                            onClick={() => {
+                                setModalOpen(false);
+                                setEditingBill(null);
+                                setError('');
+                            }}
+                        >
                             Cancelar
                         </Button>
                     </div>

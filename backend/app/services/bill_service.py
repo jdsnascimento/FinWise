@@ -322,9 +322,28 @@ class BillService:
             new_amount = update_data['amount']
             bill.amount = new_amount
             bill.total_amount = new_amount
+            for installment in bill.installments_list:
+                installment.amount = new_amount
             del update_data['amount']
             if 'total_amount' in update_data:
                 del update_data['total_amount']
+
+        if 'due_date' in update_data and update_data['due_date'] is not None:
+            for installment in bill.installments_list:
+                installment.due_date = update_data['due_date']
+
+        if 'category_id' in update_data and update_data['category_id'] is not None:
+            category = db.query(Category).filter(
+                Category.id == update_data['category_id'],
+                Category.user_id == user_id,
+                Category.type == 'expense',
+                Category.active == True
+            ).first()
+            if not category:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail="Categoria inválida ou não encontrada"
+                )
 
         # Se alterou o cartão ou outras propriedades
         if 'card_id' in update_data:
